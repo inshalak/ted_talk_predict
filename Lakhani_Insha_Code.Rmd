@@ -1,0 +1,549 @@
+---
+title: "AirBnB Analysis"
+output: html_notebook
+---
+*Technical Challenge, Wharton Analytics Fellows* 
+
+
+
+Loading in libraries to clean data
+```{r}
+library("tidyr")
+library("magrittr")
+library("dplyr")
+library("refinr")
+library("lubridate")
+library(ggplot2)
+library(ggmap)
+library(scales) #for number labeling
+library(stringr) #to play with strings
+library(Hmisc)
+library("ggpubr")
+
+
+library("pals")
+library("SnowballC")
+library("lda")
+library("ldatuning")
+library("kableExtra")
+library("DT")
+library("flextable")
+
+
+```
+
+Initial data cleaning process
+```{r}
+airbnb_df = read.csv(file.choose())
+head(airbnb_df)
+
+#initial cleaning of dataset
+airbnb_df %>% drop_na()
+airbnb_df$host_acceptance_rate <- as.numeric(gsub("%", "", as.character(airbnb_df$host_acceptance_rate)))/100
+
+#replacing NA review scores with median value
+# review_scores_rating
+airbnb_df$review_scores_rating <- replace_na(airbnb_df$review_scores_rating, median(airbnb_df$review_scores_rating, na.rm = TRUE))
+
+# review_scores_location
+airbnb_df$review_scores_location <- replace_na(airbnb_df$review_scores_location, median(airbnb_df$review_scores_location, na.rm = TRUE))
+
+# review_scores_value
+airbnb_df$review_scores_value <- replace_na(airbnb_df$review_scores_value, median(airbnb_df$review_scores_value, na.rm = TRUE))
+
+
+```
+
+
+
+*Exploratory Data Analysis*
+This section will be split up into 3 main sections, that explore various features
+of the data at hand. 
+The first section will be spatial data analysis, which answers questions 
+that relate to how price, ratings and values 
+
+The following code script deals with spatially analysing how the number of airbnbs in Hawaii have increased with time
+This code script comes from one I had experimented with in my OIDD245 class, and built on using my experiments with shapefiles. The source for the tutorial used is https://www.r-bloggers.com/2016/10/mapping-walmart-growth-across-the-us-using-r/
+```{r}
+#first gaining a general idea of the dataset at hand, to see how the number of airbnbs have varied 
+#across hawaii, and the price they hold right now. This visual will allow us to get a good sense of price
+#and growth
+
+#Creating a map object
+hawaii_bbox <- c(left = -160, bottom = 18.5, right = -154.5, top = 22.5)
+hawaii_map <- get_stamenmap(hawaii_bbox, zoom = 6, maptype = "terrain") 
+p_hawaii <- ggmap(hawaii_map) + 
+    labs(title = "Hawaii") +
+    theme(axis.title = element_blank(), 
+          axis.text  = element_blank(),
+          axis.ticks = element_blank())
+
+
+
+#Getting the data in the right form
+
+airbnb_df <- airbnb_df%>% 
+                    mutate(join_year = year(host_since), join_month = month(host_since),
+                           join_date = as.Date(paste(join_month, 1, join_year, sep = "/"), '%m/%d/%Y'))
+df_summary <- airbnb_df %>% 
+                    count(join_year, join_month) %>% ungroup() %>%
+                    arrange(join_year, join_month) %>%
+                    mutate(cumm_n = cumsum(n))
+
+df_summary <- df_summary[complete.cases(df_summary), ]
+
+df_summary <- inner_join(df_summary, select(airbnb_df, latitude, longitude, join_year, join_month, join_date), by = c("join_year" = "join_year", "join_month" = "join_month"))
+
+
+
+
+#this function has three arguments. 
+#' df: a dataframe used for plotting
+#' plotdate: date used for splitting the data frame into before and after
+#' mapid: a number for naming the final map file
+my_zip_plot <- function(df, plotdate, mapid){
+  g <- ggmap(hawaii_map, darken = c("0.8", "black")) 
+  old_df <- filter(df, join_date < plotdate)
+  new_df <- filter(df, join_date == plotdate)
+  g <- g + geom_point(data = old_df, aes(x = longitude, y = latitude), size = 2, color = "dodgerblue", alpha = 0.2)
+  g <- g + geom_point(data = new_df, aes(x = longitude, y = latitude), size = 5, color = "dodgerblue", alpha = 0.2)
+  g <- g + theme(axis.ticks = element_blank(), axis.title = element_blank(), axis.text = element_blank(), plot.title = element_blank())  
+  
+  g <- g + annotate("text", x = -74.15, y = 40.85, label = "YEAR:", color = "black", size = rel(5), hjust = 0)
+  # place the value of for year 
+  g <- g + annotate("text", x = -74.15, y = 40.839, label = unique(new_df$join_year), color = "black", size = rel(6), fontface = 2, hjust = 0)
+  # place the label for stores opened  
+  g <- g + annotate("text", x = -74.15, y = 40.825, label = "LISTING COUNT:", color = "black", size = rel(5), hjust = 0)
+  # place cumulative store openings
+  g <- g + annotate("text", x = -74.15, y = 40.814, label = comma(unique(new_df$cumm_n)), color = "black", size = rel(6), fontface = 2, hjust = 0)
+  # generate the file name for the map. Using str_pad to make the filename same length and prefixed with zeroes. 
+  # create a maps directory inside the directory of this script.
+  filename <- paste0("img" , str_pad(mapid, 7, pad = "0"),  ".png")
+  #this saves the images created.
+  ggsave(filename = filename, plot = g, width = 13, height = 7, dpi = 150, device = "png")
+}
+
+# Create a folder called 'map' in your working directory in prior to running the below code.
+
+df_summary  %>%  
+  mutate(mapid = group_indices_(df_summary, .dots = 'join_date')) %>% 
+  group_by(join_date) %>% 
+  do(pl = my_zip_plot(df_summary, unique(.$join_date), unique(.$mapid)))
+
+setwd()
+
+makemovie_cmd <- paste0("ffmpeg -framerate 5 -y -pattern_type glob -i '","/Users/inshalakhani/Desktop/WAF data challenge/" , "*.png'", " -c:v libx264 -pix_fmt yuv420p '", "/Users/inshalakhani/Desktop/WAF data challenge/", "movie.mp4'")
+
+system(makemovie_cmd)
+```
+
+The following code script looks at understanding the correlation between different variables in the table, and generating a description to get a basic idea of what deeper analysis can be done. 
+
+
+```{r}
+describe(airbnb_df)
+```
+
+
+I used the describe function from the package, ,to get an overview of the data. The Key Takeaways were as follows:
+1. Hawaii has seen an explosion in number of AirBnBs, especially post 2016
+2. Lucrative business opportunity for most, with an average per night rate of $514
+3. Average rating of 4.75, with 82.7% of hosts verified 
+4. 85 distinct property types within 30 distinct neighborhoods 
+
+
+Visualising the trend of how quickly/when AirBnB expanded in Hawaii over the last 16 years
+```{r}
+ggplot(data = df_summary, aes(x = join_date, y = cumm_n)) +
+   scale_x_date(date_breaks  ="2 years", date_labels= "%Y") + 
+  geom_line() + 
+scale_color_manual(values='Green') + 
+  labs(x = "Join Date",
+    y = "Cumulative Number of AirBnBs in Hawaii",
+    title = "AirBnB Growth",
+    subtitle = "Hawaii, 2006 - 2022")
+```
+
+```{r}
+
+
+ggplot(data = df_summary, aes(x = join_date, y = cumm_n)) +
+   scale_x_date(date_breaks  ="2 years", date_labels= "%Y") + 
+  geom_line() + 
+scale_color_manual(values='Green') + 
+  labs(x = "Join Date",
+    y = "Cumulative Number of AirBnBs in Hawaii",
+    title = "AirBnB Growth",
+    subtitle = "Hawaii, 2006 - 2022")
+
+
+df_growth = df_summary %>%
+na.omit() %>%
+group_by(join_year) %>%
+  arrange(join_year) %>%
+  select(join_year, cumm_n, price) %>%
+  mutate(Diff_year = join_year - lag(join_year),  # Difference in time (just in case there are gaps)
+         Diff_growth = cumm_n - lag(cumm_n), # Difference in route between years
+         Rate_percent = (Diff_growth / Diff_year)/lag(cumm_n) * 100) # growth rate in percent
+
+
+head(df_growth)
+
+
+ggplot(data = df_growth, aes(x = join_year, y = Diff_growth)) +
+  geom_line() + 
+scale_color_manual(values='Green') + 
+  labs(x = "Join Date",
+    y = "Cumulative Number of AirBnBs in Hawaii",
+    title = "AirBnB Growth",
+    subtitle = "Hawaii, 2006 - 2022")
+
+Average_growth = mean(df_growth$Rate_percent)
+print(Average_growth)
+
+
+res2 <-cor.test((2022 -airbnb_df$join_year), airbnb_df$price,  method = "pearson")
+print(res2)
+
+```
+
+Creating (animated) visualisation of AirBnB growth
+```{r}
+#first gaining a general idea of the dataset at hand, to see how the number of airbnbs have varied 
+#across hawaii, and the price they hold right now. This visual will allow us to get a good sense of price
+#and growth
+
+#Creating a map object
+hawaii_bbox <- c(left = -160, bottom = 18.5, right = -154.5, top = 22.5)
+hawaii_map <- get_stamenmap(hawaii_bbox, zoom = 6, maptype = "terrain") 
+p_hawaii <- ggmap(hawaii_map) + 
+    labs(title = "Hawaii") +
+    theme(axis.title = element_blank(), 
+          axis.text  = element_blank(),
+          axis.ticks = element_blank())
+
+
+
+#Getting the data in the right form
+
+airbnb_df <- airbnb_df%>% 
+                    mutate(join_year = year(host_since), join_month = month(host_since),
+                           join_date = as.Date(paste(join_month, 1, join_year, sep = "/"), '%m/%d/%Y'))
+df_summary <- airbnb_df %>% 
+                    count(join_year, join_month) %>% ungroup() %>%
+                    arrange(join_year, join_month) %>%
+                    mutate(cumm_n = cumsum(n))
+
+df_summary <- df_summary[complete.cases(df_summary), ]
+
+df_summary <- inner_join(df_summary, select(airbnb_df, latitude, longitude, join_year, join_month, join_date), by = c("join_year" = "join_year", "join_month" = "join_month"))
+
+
+
+
+#this function has three arguments. 
+#' df: a dataframe used for plotting
+#' plotdate: date used for splitting the data frame into before and after
+#' mapid: a number for naming the final map file
+my_zip_plot <- function(df, plotdate, mapid){
+  g <- ggmap(hawaii_map, darken = c("0.8", "black")) 
+  old_df <- filter(df, join_date < plotdate)
+  new_df <- filter(df, join_date == plotdate)
+  g <- g + geom_point(data = old_df, aes(x = longitude, y = latitude), size = 2, color = "dodgerblue", alpha = 0.2)
+  g <- g + geom_point(data = new_df, aes(x = longitude, y = latitude), size = 5, color = "dodgerblue", alpha = 0.2)
+  g <- g + theme(axis.ticks = element_blank(), axis.title = element_blank(), axis.text = element_blank(), plot.title = element_blank())  
+  
+  g <- g + annotate("text", x = -74.15, y = 40.85, label = "YEAR:", color = "black", size = rel(5), hjust = 0)
+  # place the value of for year 
+  g <- g + annotate("text", x = -74.15, y = 40.839, label = unique(new_df$join_year), color = "black", size = rel(6), fontface = 2, hjust = 0)
+  # place the label for stores opened  
+  g <- g + annotate("text", x = -74.15, y = 40.825, label = "LISTING COUNT:", color = "black", size = rel(5), hjust = 0)
+  # place cumulative store openings
+  g <- g + annotate("text", x = -74.15, y = 40.814, label = comma(unique(new_df$cumm_n)), color = "black", size = rel(6), fontface = 2, hjust = 0)
+  # generate the file name for the map. Using str_pad to make the filename same length and prefixed with zeroes. 
+  # create a maps directory inside the directory of this script.
+  filename <- paste0("img" , str_pad(mapid, 7, pad = "0"),  ".png")
+  #this saves the images created.
+  ggsave(filename = filename, plot = g, width = 13, height = 7, dpi = 150, device = "png")
+}
+
+# Create a folder called 'map' in your working directory in prior to running the below code.
+
+df_summary  %>%  
+  mutate(mapid = group_indices_(df_summary, .dots = 'join_date')) %>% 
+  group_by(join_date) %>% 
+  do(pl = my_zip_plot(df_summary, unique(.$join_date), unique(.$mapid)))
+
+setwd()
+
+makemovie_cmd <- paste0("ffmpeg -framerate 5 -y -pattern_type glob -i '","/Users/inshalakhani/Desktop/WAF data challenge/" , "*.png'", " -c:v libx264 -pix_fmt yuv420p '", "/Users/inshalakhani/Desktop/WAF data challenge/", "movie.mp4'")
+
+system(makemovie_cmd)
+```
+
+*LDA model to classify what descriptions of properties say about them* 
+```{r}
+library(tidyr)
+library(lubridate)
+library(wordcloud) 
+library(topicmodels)
+library(dplyr)
+library(tidyverse)
+library(rvest) 
+library(tm) 
+
+
+corp.orignal <- VCorpus(VectorSource(airbnb_df$description))
+corp.clean = tm_map(corp.orignal, removePunctuation)  
+corp.clean = tm_map(corp.clean, removeNumbers)  
+corp.clean = tm_map(corp.clean, content_transformer(tolower) ,lazy=TRUE)  
+corp.clean = tm_map(corp.clean, content_transformer(removeWords), c("TIL") ,lazy=TRUE) 
+corp.clean = tm_map(corp.clean, content_transformer(removeWords), stopwords("en") ,lazy=TRUE) 
+corp.clean = tm_map(corp.clean, stripWhitespace)
+corp.final = tm_map(corp.clean, content_transformer(removeWords), 
+                    c("the", "said", "will", "can", "also", "and", "like", "but", 
+                      "almost", "going", "just", "dont", "this", "now", "one", 
+                      "thats", "they", "youre",  "get", 
+                      "hes", "things", "were", "say", "weve","she",
+                      "come", "spacebbr", "bthe", "ammenities", "bedroom"), lazy=TRUE)
+
+dtm <- DocumentTermMatrix(corp.final) 
+dtm <- removeSparseTerms(dtm, 0.995)
+rowTotals <- apply(dtm , 1, sum) 
+dtm.new   <- dtm[rowTotals> 0, ] 
+m <- as.matrix(dtm)
+train = m[sample(nrow(m), 20),]
+print(train)
+
+ldaModel = LDA(x = train, control=list(seed = 1829), k = 4)
+
+dic_propertyType <- terms(ldaModel, 6)
+print(dic_propertyType)
+
+result <- ldatuning::FindTopicsNumber(
+  dtm.new,
+  topics = seq(from = 2, to = 20, by = 1),
+  metrics = c("CaoJuan2009",  "Deveaud2014"),
+  method = "Gibbs",
+  control = list(seed = 77),
+  verbose = TRUE
+)
+
+
+FindTopicsNumber_plot(result)
+
+# selecting topic names and applying them to the dataset
+
+topics = c("Ammenity Related", "Outdoors", "Indoor", "Overall")
+new_dtm = DocumentTermMatrix(corp.final, control=list(dictionary = dic_propertyType))
+new_dtm = new_dtm[rowSums(as.matrix(new_dtm))]
+topic_probabilities = posterior(ldaModel, new_dtm)$topics
+
+word.freq = colSums(m) 
+word.freq = sort(word.freq, decreasing=T)
+df <- data.frame(word = names(word.freq),freq=word.freq)
+wordcloud(words = df$word, freq = df$freq, min.freq = 1,max.words=30, random.order=FALSE, rot.per=0.35,            colors=brewer.pal(8, "Dark2"))
+
+```
+
+
+*Regression Analysis*
+
+```{r}
+airbnb_df$bathrooms_text <- readr::parse_number(airbnb_df$bathrooms_text)
+
+#slicing into testing and training data
+split<- sample(c(rep(0, 0.7 * nrow(airbnb_df)), rep(1, 0.3 * nrow(airbnb_df))))
+
+train <- airbnb_df[split == 0, ]  
+test <- airbnb_df[split ==1, ]
+
+airbnb_df$room_type <- recategorise(airbnb_df$room_type)
+
+
+
+
+model1 = lm(price ~  property_type + 
+                      accommodates + 
+                      #bathrooms_text + 
+                      bedrooms + 
+                      beds + 
+                      number_of_reviews + 
+                      review_scores_rating + 
+                      reviews_per_month, data = airbnb_df)
+
+summary(model1)
+
+predict(model1, test)
+
+# Low P-value, so we retry with feature engineering
+
+
+```
+
+*Feature Engineering*
+```{r}
+# number of times beach is mentioned in description
+airbnb_df$countBEACH <- str_count(airbnb_df$description, "beach")
+head(airbnb_df$countBEACH )
+
+#number of times beach is mentioned in location
+airbnb_df$countLOCATION_beach <- str_count(airbnb_df$neighborhood_overview, "beach")
+head(airbnb_df$countLOCATION_beach )
+
+#cleaning in case we have any NA values
+airbnb_df[is.na(airbnb_df)] = 0
+
+#creating a list for number of ammenities
+airbnb_df$num_ammenities = lengths(strsplit(as.character(airbnb_df$amenities),','))
+head(airbnb_df$num_ammenities )
+
+```
+
+*Regression Analysis Pt.2*
+```{r}
+
+#slicing into testing and training data
+split<- sample(c(rep(0, 0.7 * nrow(airbnb_df)), rep(1, 0.3 * nrow(airbnb_df))))
+
+train <- airbnb_df[split == 0, ]  
+test <- airbnb_df[split ==1, ]
+
+airbnb_df$room_type <- recategorise(airbnb_df$room_type)
+
+model1 = lm(price ~  property_type +
+                      num_ammenities + 
+                      countLOCATION_beach +
+                      bathrooms_text + 
+                      number_of_reviews
+              , data = airbnb_df)
+
+summary(model1)
+
+predict(model1, test)
+
+```
+
+
+
+
+
+*LDA model to classify based on description* 
+```{r}
+print(airbnb_df$host_about)
+corp.orignal <- VCorpus(VectorSource(airbnb_df$host_about))
+corp.clean = tm_map(corp.orignal, removePunctuation)  
+corp.clean = tm_map(corp.clean, removeNumbers)  
+corp.clean = tm_map(corp.clean, content_transformer(tolower) ,lazy=TRUE)  
+corp.clean = tm_map(corp.clean, content_transformer(removeWords), c("TIL") ,lazy=TRUE) 
+corp.clean = tm_map(corp.clean, content_transformer(removeWords), stopwords("en") ,lazy=TRUE) 
+corp.clean = tm_map(corp.clean, stripWhitespace)
+corp.final = tm_map(corp.clean, content_transformer(removeWords), 
+                    c("the", "said", "will", "can", "also", "and", "like", "but", 
+                      "almost", "going", "just", "dont", "this", "now", "one", 
+                      "thats", "they", "youre",  "get", 
+                      "hes", "things", "were", "say", "weve","she",
+                      "come", "spacebbr", "bthe", "ammenities", "bedroom"), lazy=TRUE)
+
+dtm <- DocumentTermMatrix(corp.final) 
+dtm <- removeSparseTerms(dtm, 0.995)
+rowTotals <- apply(dtm , 1, sum) 
+dtm.new   <- dtm[rowTotals> 0, ] 
+m <- as.matrix(dtm.new)
+train = m[sample(nrow(m), 20),]
+print(train)
+
+ldaModel = LDA(x = train, control=list(seed = 8), k = 10)
+
+dic <- terms(ldaModel, 8)
+print(dic)
+
+#making word cloud
+word.freq = colSums(m) 
+word.freq = sort(word.freq, decreasing=T)
+df <- data.frame(word = names(word.freq),freq=word.freq)
+wordcloud(words = df$word, freq = df$freq, min.freq = 1,max.words=100, random.order=FALSE, rot.per=0.35,            colors=brewer.pal(8, "Dark2"))
+
+
+
+
+
+
+
+```
+
+
+
+```{r}
+#Number Dataframe
+airbnb.num <- airbnb_df %>% 
+  select_if(is.numeric)
+
+airbnb.num = subset(airbnb.num, select = -c(host_listings_count, maximum_nights))
+
+airbnb.scale <- as.data.frame(scale(airbnb.num))
+
+fviz_cluster(airbnb.km, data = (na.omit(airbnb.scale)))
+
+airbnb.km$size
+
+SSE_curve <- c()
+
+for (n in 1:15) {
+airbnb.km <- kmeans(na.omit(airbnb.scale), n)
+sse <- sum(airbnb.km$withinss)
+SSE_curve[n] <- sse
+}
+
+plot(1:15, SSE_curve, type ="b", xlab= "Number of Clusters", ylab="SSE",main="Elbow Curve")
+
+
+
+cormat <- round(cor(airbnb.num),4)
+
+
+library(corrplot)
+library(reshape2) 
+
+melted_cormat <- melt(cormat)
+
+# Get lower triangle of the correlation matrix
+get_lower_tri<-function(cormat){
+  cormat[upper.tri(cormat)] <- NA
+  return(cormat)
+}
+# Get upper triangle of the correlation matrix
+get_upper_tri <- function(cormat){
+  cormat[lower.tri(cormat)]<- NA
+  return(cormat)
+}
+
+upper_tri <- get_upper_tri(cormat)
+
+
+# Melt the correlation matrix
+library(reshape2)
+melted_cormat <- melt(cormat, na.rm = TRUE)
+
+# Heat map
+ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+  geom_tile(color = "white")+
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab", 
+                       name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                   size = 9, hjust = 1))+
+  coord_fixed() +xlab("")+ylab("")
+
+
+
+```
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML coy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
